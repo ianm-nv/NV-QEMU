@@ -139,12 +139,14 @@ test('fp-test-mulAdd', fptest,
      timeout: slow_fp_tests.get('mulAdd', 30),
      suite: ['softfloat-slow', 'softfloat-ops-slow', 'slow'])
 
-executable(
-  'fp-bench',
-  ['fp-bench.c', '../../fpu/softfloat.c'],
-  dependencies: [qemuutil, libtestfloat, libsoftfloat],
-  c_args: fpcflags,
-)
+if cc.has_header('fenv.h')
+  executable(
+    'fp-bench',
+    ['fp-bench.c', '../../fpu/softfloat.c'],
+    dependencies: [qemuutil, libtestfloat, libsoftfloat],
+    c_args: fpcflags,
+  )
+endif
 
 fptestlog2 = executable(
   'fp-test-log2',
