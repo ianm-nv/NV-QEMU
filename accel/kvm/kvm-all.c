@@ -3360,6 +3360,16 @@ int kvm_ioctl(KVMState *s, unsigned long type, ...)
     return ret;
 }
 
+int kvm_vcpu_fd(CPUState *cpu)
+{
+    return cpu->kvm_fd;
+}
+
+int kvm_vm_fd(KVMState *s)
+{
+    return s->vmfd;
+}
+
 int kvm_vm_ioctl(KVMState *s, unsigned long type, ...)
 {
     int ret;

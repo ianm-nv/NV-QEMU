@@ -125,3 +125,13 @@ int kvm_create_guest_memfd(uint64_t size, uint64_t flags, Error **errp)
 {
     return -ENOSYS;
 }
+
+int kvm_vm_fd(KVMState *s)
+{
+    return -1;
+}
+
+int kvm_vcpu_fd(CPUState *cpu)
+{
+    return -1;
+}
