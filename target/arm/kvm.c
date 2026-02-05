@@ -41,6 +41,10 @@
 #include "hw/acpi/ghes.h"
 #include "target/arm/gtimer.h"
 #include "migration/blocker.h"
+#include "system/iommufd.h"
+
+#include "linux-headers/linux/arm-smccc.h"
+#include "linux-headers/linux/tsm.h"
 
 const KVMCapabilityInfo kvm_arch_required_capabilities[] = {
     KVM_CAP_INFO(DEVICE_CTRL),
@@ -532,6 +536,19 @@ int kvm_arch_get_default_type(MachineState *ms)
     return fixed_ipa ? 0 : size;
 }
 
+static struct kvm_smccc_filter filter_ranges[] = {
+    {
+        .base        = RHI_DA_VDEV_GET_MEASUREMENTS,
+        .nr_functions    = 0x3,
+        .action        = KVM_SMCCC_FILTER_FWD_TO_USER,
+    },
+    {
+        .base        = RHI_DA_FEATURES,
+        .nr_functions    = 0x3,
+        .action        = KVM_SMCCC_FILTER_FWD_TO_USER,
+    },
+};
+
 int kvm_arch_init(MachineState *ms, KVMState *s)
 {
     int ret;
@@ -601,6 +618,23 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
     ret = kvm_arm_rme_init(ms);
     if (ret) {
         error_report("Failed to enable RME: %s", strerror(-ret));
+    }
+
+    struct kvm_device_attr attr = {
+        .group    = KVM_ARM_VM_SMCCC_CTRL,
+        .attr    = KVM_ARM_VM_SMCCC_FILTER,
+    };
+    unsigned int i;
+
+    if (kvm_vm_ioctl(s, KVM_HAS_DEVICE_ATTR, &attr)) {
+        warn_report("KVM SMCCC filter not supported");
+    }
+
+    for (i = 0; i < ARRAY_SIZE(filter_ranges); i++) {
+        attr.addr = (uint64_t)&filter_ranges[i];
+
+        if (kvm_vm_ioctl(s, KVM_SET_DEVICE_ATTR, &attr))
+            warn_report("KVM_SET_DEVICE_ATTR failed");
     }
 
     return ret;
@@ -1578,6 +1612,199 @@ static bool kvm_arm_handle_debug(ARMCPU *cpu,
     return false;
 }
 
+static int handle_da_vdev_set_tdi_state(ARMCPU *cpu)
+{
+    CPUARMState *env = &cpu->env;
+    uint64_t guest_rid = env->xregs[1];
+    uint64_t target_state = env->xregs[2];
+    int ret = -EINVAL;
+
+    if (target_state == RHI_DA_TDI_CONFIG_LOCKED) {
+        ret = iommufd_tsm_bind(guest_rid);
+    } else if (target_state == RHI_DA_TDI_CONFIG_UNLOCKED) {
+        ret = iommufd_tsm_unbind(guest_rid);
+    } else if (target_state == RHI_DA_TDI_CONFIG_RUN) {
+        ret = iommufd_tsm_da_set_tdi_state_run(guest_rid);
+    }
+
+    if (!ret) {
+        env->xregs[0] = RHI_DA_SUCCESS;
+    } else if (ret == -ENODEV) {
+        env->xregs[0] = RHI_DA_ERROR_INVALID_VDEV_ID;
+    } else {
+        env->xregs[0] = RHI_DA_ERROR_INVALID_OBJECT;
+    }
+
+    /* return to guest. */
+    return 0;
+}
+
+/* 0 -> return to guest, 1 -> grace exit, -1 -> panic/die */
+static int handle_da_features(ARMCPU *cpu)
+{
+    CPUARMState *env = &cpu->env;
+
+    env->xregs[0] = RHI_DA_BASE_FEATURE;
+
+    /* return to guest. */
+    return 0;
+}
+
+
+/* 0 -> return to guest, 1 -> grace exit, -1 -> panic/die */
+static int handle_da_object_size(ARMCPU *cpu)
+{
+    CPUARMState *env = &cpu->env;
+    uint64_t guest_rid = env->xregs[1];
+    uint64_t object_type = env->xregs[2];
+    unsigned int object_size;
+    int ret;
+
+    ret = iommufd_tsm_get_da_object_size(guest_rid, object_type, &object_size);
+    if (!ret) {
+        env->xregs[0] = RHI_DA_SUCCESS;
+        env->xregs[1] = object_size;
+    } else if (ret == -ENODEV) {
+        env->xregs[0] = RHI_DA_ERROR_INVALID_VDEV_ID;
+    } else if (ret == -EINVAL) {
+        env->xregs[0] = RHI_DA_ERROR_INVALID_OBJECT;
+    } else {
+        env->xregs[0] = RHI_DA_ERROR_DATA_NOT_AVAILABLE;
+    }
+    /* return to guest. */
+    return 0;
+}
+
+static int handle_da_object_read(ARMCPU *cpu)
+{
+    CPUARMState *env = &cpu->env;
+    uint64_t guest_rid = env->xregs[1];
+    uint64_t object_type = env->xregs[2];
+    uint64_t guest_ipa = env->xregs[3];
+    uint64_t max_len = env->xregs[4];
+    uint64_t offset = env->xregs[5];
+    unsigned int resp_len;
+    hwaddr len = 4096;
+    void *hva = cpu_physical_memory_map(guest_ipa, &len, true);
+    int ret;
+
+    if (!hva) {
+        env->xregs[0] = RHI_DA_ERROR_ACCESS_FAILED;
+        return 0;
+    }
+
+    ret = iommufd_tsm_da_object_read(guest_rid, object_type, offset, hva,
+                                       max_len, &resp_len);
+    if (!ret) {
+        env->xregs[0] = RHI_DA_SUCCESS;
+        env->xregs[1] = resp_len;
+    } else if (ret == -EFAULT) {
+        env->xregs[0] = RHI_DA_ERROR_ACCESS_FAILED;
+    } else if (ret == -ENODEV) {
+        env->xregs[0] = RHI_DA_ERROR_INVALID_VDEV_ID;
+    } else if (ret == -EINVAL) {
+        env->xregs[0] = RHI_DA_ERROR_INVALID_OBJECT;
+    } else {
+        env->xregs[0] = RHI_DA_ERROR_DATA_NOT_AVAILABLE;
+    }
+    /* return to guest. */
+    return 0;
+}
+
+static int handle_da_get_interface_report(ARMCPU *cpu)
+{
+    CPUARMState *env = &cpu->env;
+    uint64_t guest_rid = env->xregs[1];
+    int ret;
+
+    ret = iommufd_tsm_da_get_interface_report(guest_rid);
+    if (!ret) {
+        env->xregs[0] = RHI_DA_SUCCESS;
+    } else if (ret == -ENODEV) {
+        env->xregs[0] = RHI_DA_ERROR_INVALID_VDEV_ID;
+    } else {
+        env->xregs[0] = RHI_DA_ERROR_INPUT;
+    }
+    /* return to guest. */
+    return 0;
+}
+
+static int handle_da_get_measurements(ARMCPU *cpu)
+{
+    CPUARMState *env = &cpu->env;
+    uint64_t param;
+    uint64_t guest_rid = env->xregs[1];
+    struct rhi_vdev_measurement_params *param_hva;
+    hwaddr len = 4096;
+    int ret;
+
+    param = env->xregs[2];
+    param_hva = (struct rhi_vdev_measurement_params *)cpu_physical_memory_map(param, &len, false);
+
+    if (!param_hva) {
+        env->xregs[0] = RHI_DA_ERROR_ACCESS_FAILED;
+        return 0;
+    }
+
+    ret = iommufd_tsm_da_get_measurement(guest_rid, param_hva);
+    if (!ret) {
+        env->xregs[0] = RHI_DA_SUCCESS;
+    } else if (ret == -EFAULT) {
+        env->xregs[0] = RHI_DA_ERROR_ACCESS_FAILED;
+    } else if (ret == -ENODEV) {
+        env->xregs[0] = RHI_DA_ERROR_INVALID_VDEV_ID;
+    } else {
+        env->xregs[0] = RHI_DA_ERROR_INPUT;
+    }
+    /* return to guest. */
+    return 0;
+}
+
+static int handle_std_hyp_call(ARMCPU *cpu, struct kvm_run *kvm_run)
+{
+    uint32_t fn = kvm_run->hypercall.nr;
+
+    switch (fn) {
+    case RHI_DA_FEATURES:
+        return handle_da_features(cpu);
+    case RHI_DA_OBJECT_SIZE:
+        return handle_da_object_size(cpu);
+    case RHI_DA_OBJECT_READ:
+        return handle_da_object_read(cpu);
+    case RHI_DA_VDEV_GET_INTERFACE_REPORT:
+        return handle_da_get_interface_report(cpu);
+    case RHI_DA_VDEV_GET_MEASUREMENTS:
+        return handle_da_get_measurements(cpu);
+    case RHI_DA_VDEV_SET_TDI_STATE:
+        return handle_da_vdev_set_tdi_state(cpu);
+    }
+    return 0;
+}
+
+#define REC_ENTER_FLAG_DEV_MEM_RESPONSE (1 << 6)
+
+static int handle_arm64_tio_exit(ARMCPU *cpu, struct kvm_run *kvm_run)
+{
+    bool ret;
+    if (kvm_run->cca_exit.nr == RMI_EXIT_VDEV_MAP) {
+        unsigned long gpa_base, gpa_top, pa_base, vdev_id;
+
+        gpa_base = kvm_run->cca_exit.gpa_base;
+        gpa_top = kvm_run->cca_exit.gpa_top;
+        pa_base = kvm_run->cca_exit.pa_base;
+        vdev_id = kvm_run->cca_exit.vdev_id;
+        ret = iommufd_tsm_dev_memmap_exit(kvm_vcpu_fd(CPU(cpu)),
+                          vdev_id, gpa_base, gpa_top, pa_base);
+        if (!ret)
+            kvm_vcpu_ioctl(CPU(cpu), KVM_ARM_VCPU_RMM_REC_ENTER_FLAGS,
+                  REC_ENTER_FLAG_DEV_MEM_RESPONSE);
+
+    } else if (kvm_run->cca_exit.nr == RMI_EXIT_VDEV_REQUEST) {
+        iommufd_tsm_vdev_req_exit(kvm_vcpu_fd(CPU(cpu)), kvm_run->cca_exit.vdev_id);
+    }
+    return 0;
+}
+
 int kvm_arch_handle_exit(CPUState *cs, struct kvm_run *run)
 {
     ARMCPU *cpu = ARM_CPU(cs);
@@ -1601,6 +1828,13 @@ int kvm_arch_handle_exit(CPUState *cs, struct kvm_run *run)
         /* External DABT with no valid iss to decode */
         ret = kvm_arm_handle_dabt_nisv(cpu, run->arm_nisv.esr_iss,
                                        run->arm_nisv.fault_ipa);
+        break;
+    case KVM_EXIT_ARM64_TIO:
+        ret = handle_arm64_tio_exit(cpu, run);
+        break;
+    case KVM_EXIT_HYPERCALL:
+        // ARM_SMCCC_OWNER_STANDARD_HYP:
+        ret = handle_std_hyp_call(cpu, run);
         break;
     default:
         qemu_log_mask(LOG_UNIMP, "%s: un-handled exit reason %d\n",
