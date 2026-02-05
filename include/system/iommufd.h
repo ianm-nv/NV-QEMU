@@ -77,6 +77,28 @@ bool iommufd_change_process_capable(IOMMUFDBackend *be);
 bool iommufd_change_process(IOMMUFDBackend *be, Error **errp);
 
 int iommufd_vdevice_register(VFIODevice *vbasedev, Error **errp);
+int iommufd_tsm_da_set_tdi_state_run(unsigned int vdev_id);
+int iommufd_tsm_get_da_object_size(unsigned int vdev_id,
+       unsigned int object_type,
+       unsigned int *object_size);
+int iommufd_tsm_da_object_read(unsigned int vdev_id,
+       unsigned int object_type,
+       unsigned long offset,
+       void *buf,
+       unsigned long max_len,
+       unsigned int *resp_len);
+int iommufd_tsm_da_get_interface_report(unsigned int vdev_id);
+struct rhi_vdev_measurement_params;
+int iommufd_tsm_da_get_measurement(unsigned int vdev_id,
+       struct rhi_vdev_measurement_params *param);
+bool iommufd_tsm_dev_memmap_exit(int vcpu_fd,
+    unsigned long vdev_id,
+    unsigned long gpa_base, unsigned long gpa_top,
+    unsigned long pa_base);
+bool iommufd_tsm_vdev_req_exit(int vcpu_fd, unsigned long vdev_id);
+int iommufd_tsm_bind(unsigned long vdev_id);
+int iommufd_tsm_unbind(unsigned long vdev_id);
+
 #define TYPE_HOST_IOMMU_DEVICE_IOMMUFD TYPE_HOST_IOMMU_DEVICE "-iommufd"
 OBJECT_DECLARE_TYPE(HostIOMMUDeviceIOMMUFD, HostIOMMUDeviceIOMMUFDClass,
                     HOST_IOMMU_DEVICE_IOMMUFD)

@@ -31,9 +31,232 @@
 #include "vfio-iommufd.h"
 #include "vfio-helpers.h"
 #include "vfio-listener.h"
+#include "linux-headers/linux/arm-smccc.h"
+#include "linux-headers/linux/tsm.h"
 
 #define TYPE_HOST_IOMMU_DEVICE_IOMMUFD_VFIO             \
             TYPE_HOST_IOMMU_DEVICE_IOMMUFD "-vfio"
+
+int iommufd_tsm_bind(unsigned long vdev_id)
+{
+    VFIODevice *vbasedev = vfio_find_bdf(vdev_id);
+    struct iommu_vdevice_tsm_op tsm_op;
+
+    if (!vbasedev || !vbasedev->vdevice) {
+        return -ENODEV;
+    }
+
+    tsm_op.size = sizeof(struct iommu_vdevice_tsm_op);
+    tsm_op.flags = 0;
+    tsm_op.op = IOMMU_VDEVICE_TSM_BIND;
+    tsm_op.vdevice_id = vbasedev->vdevice_id;
+
+    if (ioctl(vbasedev->iommufd->fd, IOMMU_VDEVICE_TSM_OP, &tsm_op)) {
+        warn_report("Failed tsm bind vdevice %d\n", errno);
+        return -errno;
+    }
+
+    return 0;
+}
+
+int iommufd_tsm_unbind(unsigned long vdev_id)
+{
+    VFIODevice *vbasedev = vfio_find_bdf(vdev_id);
+    struct iommu_vdevice_tsm_op tsm_op;
+
+    if (!vbasedev || !vbasedev->vdevice) {
+        return -ENODEV;
+    }
+
+    tsm_op.size = sizeof(struct iommu_vdevice_tsm_op);
+    tsm_op.flags = 0;
+    tsm_op.op = IOMMU_VDEVICE_TSM_UNBIND;
+    tsm_op.vdevice_id = vbasedev->vdevice_id;
+
+    if (ioctl(vbasedev->iommufd->fd, IOMMU_VDEVICE_TSM_OP, &tsm_op)) {
+        warn_report("Failed tsm unbind vdevice %d\n", errno);
+        return -errno;
+    }
+
+    return 0;
+}
+
+static int iommufd_tsm_guest_request(VFIODevice *vbasedev,
+                                     uint32_t vdevice_id, uint32_t scope,
+                                     void *req, uint32_t req_len,
+                                     void *resp, uint32_t resp_len,
+                                     uint32_t *actual_resp_len)
+{
+    struct iommu_vdevice_tsm_guest_request guest_req = {
+        .size = sizeof(guest_req),
+        .vdevice_id = vdevice_id,
+        .scope = scope,
+        .req_uptr = (uintptr_t)req,
+        .req_len = req_len,
+        .resp_uptr = (uintptr_t)resp,
+        .resp_len = resp_len,
+    };
+    int ret;
+
+    ret = ioctl(vbasedev->iommufd->fd, IOMMU_VDEVICE_TSM_GUEST_REQUEST, &guest_req);
+    if (ret < 0) {
+        warn_report("IOMMU_VDEVICE_TSM_GUEST_REQUEST failed: %d", errno);
+        return -errno;
+    }
+
+    /* return value is the residue */
+    if (actual_resp_len) {
+        *actual_resp_len = resp_len - ret;
+    }
+
+    return 0;
+}
+
+int iommufd_tsm_da_set_tdi_state_run(unsigned int vdev_id)
+{
+    VFIODevice *vbasedev = vfio_find_bdf(vdev_id);
+    struct arm64_vdev_set_tdi_state_guest_req req;
+
+    if (!vbasedev || !vbasedev->vdevice) {
+        return -ENODEV;
+    }
+
+    req.req_type = __RHI_DA_VDEV_SET_TDI_STATE;
+    req.tdi_state = RHI_DA_TDI_CONFIG_RUN;
+    return iommufd_tsm_guest_request(vbasedev, vbasedev->vdevice_id,
+                                     PCI_TSM_REQ_STATE_CHANGE,
+                                     &req, sizeof(req),
+                                     NULL, 0, NULL);
+}
+
+int iommufd_tsm_get_da_object_size(unsigned int vdev_id,
+       unsigned int object_type,
+       unsigned int *object_size)
+{
+    VFIODevice *vbasedev = vfio_find_bdf(vdev_id);
+    struct arm64_vdev_object_size_guest_req req;
+    uint32_t resp_len = 0;
+    int ret;
+
+    if (!vbasedev || !vbasedev->vdevice) {
+        return -ENODEV;
+    }
+
+    req.object_type = object_type;
+    req.req_type = __RHI_DA_OBJECT_SIZE;
+    ret = iommufd_tsm_guest_request(vbasedev, vbasedev->vdevice_id,
+                                    PCI_TSM_REQ_INFO,
+                                    &req, sizeof(req),
+                                    object_size, sizeof(*object_size),
+                                    &resp_len);
+    if (ret) {
+        return ret;
+    }
+    if (resp_len != sizeof(int)) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+int iommufd_tsm_da_object_read(unsigned int vdev_id,
+       unsigned int object_type,
+       unsigned long offset,
+       void *buf,
+       unsigned long max_len,
+       unsigned int *resp_len)
+{
+    VFIODevice *vbasedev = vfio_find_bdf(vdev_id);
+    struct arm64_vdev_object_read_guest_req req;
+
+    if (!vbasedev || !vbasedev->vdevice) {
+        return -ENODEV;
+    }
+
+    req.object_type = object_type;
+    req.req_type = __RHI_DA_OBJECT_READ;
+    req.offset = offset;
+    return iommufd_tsm_guest_request(vbasedev, vbasedev->vdevice_id,
+                                     PCI_TSM_REQ_INFO,
+                                     &req, sizeof(req),
+                                     buf, max_len,
+                                     (uint32_t *)resp_len);
+}
+
+int iommufd_tsm_da_get_interface_report(unsigned int vdev_id)
+{
+    VFIODevice *vbasedev = vfio_find_bdf(vdev_id);
+    __u32 req_type;
+
+    if (!vbasedev || !vbasedev->vdevice) {
+        return -ENODEV;
+    }
+
+    req_type = __RHI_DA_VDEV_GET_INTERFACE_REPORT;
+    return iommufd_tsm_guest_request(vbasedev, vbasedev->vdevice_id,
+                                     PCI_TSM_REQ_INFO,
+                                     &req_type, sizeof(req_type),
+                                     NULL, 0, NULL);
+}
+
+int iommufd_tsm_da_get_measurement(unsigned int vdev_id,
+       struct rhi_vdev_measurement_params *param)
+{
+    struct arm64_vdev_device_measurement_guest_req req;
+    VFIODevice *vbasedev = vfio_find_bdf(vdev_id);
+
+    if (!vbasedev || !vbasedev->vdevice) {
+        return -ENODEV;
+    }
+
+    req.req_type = __RHI_DA_VDEV_GET_MEASUREMENTS;
+    req.flags = param->flags;
+    req.indices = &param->indices[0];
+    req.nonce = &param->nonce[0];
+
+    return iommufd_tsm_guest_request(vbasedev, vbasedev->vdevice_id,
+                                     PCI_TSM_REQ_INFO,
+                                     &req, sizeof(req),
+                                     NULL, 0, NULL);
+}
+
+bool iommufd_tsm_dev_memmap_exit(int vcpu_fd,
+    unsigned long vdev_id,
+    unsigned long gpa_base, unsigned long gpa_top,
+    unsigned long pa_base)
+{
+    struct arm64_vdev_device_memmap_guest_req req;
+    VFIODevice *vbasedev = vfio_find_bdf(vdev_id);
+
+    if (!vbasedev || !vbasedev->vdevice)
+            return false;
+
+    req.req_type = __REC_EXIT_DA_VDEV_MAP;
+    req.gpa_base = gpa_base;
+    req.gpa_top = gpa_top;
+    req.pa_base = pa_base;
+    req.vcpu_fd = vcpu_fd;
+
+    return iommufd_tsm_guest_request(vbasedev, vbasedev->vdevice_id,
+                                     PCI_TSM_REQ_STATE_CHANGE,
+                                     &req, sizeof(req),
+                                     NULL, 0, NULL) == 0;
+}
+
+bool iommufd_tsm_vdev_req_exit(int vcpu_fd, unsigned long vdev_id)
+{
+    struct arm64_vdev_device_idmap_guest_req req;
+    VFIODevice *vbasedev = vfio_find_bdf(vdev_id);
+
+    if (!vbasedev || !vbasedev->vdevice)
+            return false;
+
+    req.req_type =  __REC_EXIT_DA_VDEV_REQUEST;
+    req.vcpu_fd = vcpu_fd;
+    return iommufd_tsm_guest_request(vbasedev, vbasedev->vdevice_id,
+                                     PCI_TSM_REQ_INFO,
+                                     &req, sizeof(req),
+                                     NULL, 0, NULL) == 0;
+}
 
 static int iommufd_cdev_map(const VFIOContainer *bcontainer, hwaddr iova,
                             uint64_t size, void *vaddr, bool readonly,
