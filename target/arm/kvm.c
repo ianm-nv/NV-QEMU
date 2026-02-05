@@ -1583,6 +1583,14 @@ int kvm_arch_handle_exit(CPUState *cs, struct kvm_run *run)
     ARMCPU *cpu = ARM_CPU(cs);
     int ret = 0;
 
+    /* TODO: Need proper SMCCC support */
+    kvm_get_one_reg(cs, 0x6030000000100000, &cpu->env.xregs[0]);
+    kvm_get_one_reg(cs, 0x6030000000100002, &cpu->env.xregs[1]);
+    kvm_get_one_reg(cs, 0x6030000000100004, &cpu->env.xregs[2]);
+    kvm_get_one_reg(cs, 0x6030000000100006, &cpu->env.xregs[3]);
+    kvm_get_one_reg(cs, 0x6030000000100008, &cpu->env.xregs[4]);
+    kvm_get_one_reg(cs, 0x603000000010000a, &cpu->env.xregs[5]);
+
     switch (run->exit_reason) {
     case KVM_EXIT_DEBUG:
         if (kvm_arm_handle_debug(cpu, &run->debug.arch)) {
@@ -1599,6 +1607,13 @@ int kvm_arch_handle_exit(CPUState *cs, struct kvm_run *run)
                       __func__, run->exit_reason);
         break;
     }
+
+    /* TODO: Need proper SMCCC support */
+    kvm_set_one_reg(cs, 0x6030000000100000, &cpu->env.xregs[0]);
+    kvm_set_one_reg(cs, 0x6030000000100002, &cpu->env.xregs[1]);
+    kvm_set_one_reg(cs, 0x6030000000100004, &cpu->env.xregs[2]);
+    kvm_set_one_reg(cs, 0x6030000000100006, &cpu->env.xregs[3]);
+
     return ret;
 }
 
