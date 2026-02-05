@@ -19,6 +19,8 @@
 #include "exec/cpu-common.h"
 #include "system/host_iommu_device.h"
 
+typedef struct VFIODevice VFIODevice;
+
 #define TYPE_IOMMUFD_BACKEND "iommufd"
 OBJECT_DECLARE_TYPE(IOMMUFDBackend, IOMMUFDBackendClass, IOMMUFD_BACKEND)
 
@@ -34,6 +36,7 @@ struct IOMMUFDBackend {
     bool owned;        /* is the /dev/iommu opened internally */
     Error *cpr_blocker;/* set if be does not support CPR */
     uint32_t users;
+    uint32_t viommu_id;
 
     /*< public >*/
 };
@@ -73,6 +76,7 @@ bool iommufd_backend_invalidate_cache(IOMMUFDBackend *be, uint32_t id,
 bool iommufd_change_process_capable(IOMMUFDBackend *be);
 bool iommufd_change_process(IOMMUFDBackend *be, Error **errp);
 
+int iommufd_vdevice_register(VFIODevice *vbasedev, Error **errp);
 #define TYPE_HOST_IOMMU_DEVICE_IOMMUFD TYPE_HOST_IOMMU_DEVICE "-iommufd"
 OBJECT_DECLARE_TYPE(HostIOMMUDeviceIOMMUFD, HostIOMMUDeviceIOMMUFDClass,
                     HOST_IOMMU_DEVICE_IOMMUFD)

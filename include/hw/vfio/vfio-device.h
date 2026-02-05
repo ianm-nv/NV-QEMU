@@ -85,6 +85,8 @@ typedef struct VFIODevice {
     bool iommu_dirty_tracking;
     HostIOMMUDevice *hiod;
     int devid;
+    int vdevice_id;
+    bool vdevice;
     IOMMUFDBackend *iommufd;
     VFIOIOASHwpt *hwpt;
     QLIST_ENTRY(VFIODevice) hwpt_next;

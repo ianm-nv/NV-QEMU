@@ -27,6 +27,7 @@
 #include "qemu/chardev_open.h"
 #include "migration/cpr.h"
 #include "pci.h"
+#include "system/kvm.h"
 #include "vfio-iommufd.h"
 #include "vfio-helpers.h"
 #include "vfio-listener.h"
@@ -282,6 +283,42 @@ static int iommufd_cdev_attach_ioas_hwpt(VFIODevice *vbasedev, uint32_t id,
     return 0;
 }
 
+int iommufd_vdevice_register(VFIODevice *vbasedev, Error **errp)
+{
+    IOMMUFDBackend *iommufd = vbasedev->iommufd;
+    struct iommu_vdevice_alloc alloc_vdev;
+    VFIOPCIDevice *vdev;
+    int ret;
+
+    if (vbasedev->type != VFIO_DEVICE_TYPE_PCI) {
+        return -EINVAL;
+    }
+
+    vdev = container_of(vbasedev, VFIOPCIDevice, vbasedev);
+
+    alloc_vdev.size = sizeof(alloc_vdev);
+    alloc_vdev.viommu_id = iommufd->viommu_id;
+    alloc_vdev.dev_id = vbasedev->devid;
+    alloc_vdev.virt_id = (0ULL << 16) |
+                         ((uint64_t)pci_get_bdf(&vdev->parent_obj));
+
+    if (ioctl(iommufd->fd, IOMMU_VDEVICE_ALLOC, &alloc_vdev)) {
+        ret = -errno;
+        warn_report("failed to allocate vdevice %d", ret);
+        return ret;
+    }
+
+    ret = iommufd_cdev_attach_ioas_hwpt(vbasedev, vbasedev->hwpt->hwpt_id_2, errp);
+    if (ret) {
+        warn_report("failed to attach hwpt %d", ret);
+        return ret;
+    }
+
+    vbasedev->vdevice_id = alloc_vdev.out_vdevice_id;
+
+    return 0;
+}
+
 static bool iommufd_cdev_detach_ioas_hwpt(VFIODevice *vbasedev, Error **errp)
 {
     int iommufd = vbasedev->iommufd->fd;
@@ -345,46 +382,106 @@ static bool iommufd_cdev_autodomains_get(VFIODevice *vbasedev,
         }
     }
 
-    /*
-     * This is quite early and VFIO Migration state isn't yet fully
-     * initialized, thus rely only on IOMMU hardware capabilities as to
-     * whether IOMMU dirty tracking is going to be requested. Later
-     * vfio_migration_realize() may decide to use VF dirty tracking
-     * instead.
-     */
-    if (!iommufd_backend_get_device_info(vbasedev->iommufd, vbasedev->devid,
-                                         &type, NULL, 0, &hw_caps, errp)) {
-        return false;
-    }
+    if (vbasedev->vdevice) {
+        flags = IOMMU_HWPT_ALLOC_NEST_PARENT;
+        if (!iommufd_backend_alloc_hwpt(iommufd, vbasedev->devid,
+                                        container->ioas_id, flags,
+                                        IOMMU_HWPT_DATA_NONE, 0, NULL,
+                                        &hwpt_id, errp)) {
+            return false;
+        }
 
-    if (hw_caps & IOMMU_HW_CAP_DIRTY_TRACKING) {
-        flags = IOMMU_HWPT_ALLOC_DIRTY_TRACKING;
-    }
+        hwpt = g_malloc0(sizeof(*hwpt));
+        hwpt->hwpt_id = hwpt_id;
+        hwpt->hwpt_flags = flags;
+        QLIST_INIT(&hwpt->device_list);
 
-    if (cpr_is_incoming()) {
-        hwpt_id = vbasedev->cpr.hwpt_id;
-        goto skip_alloc;
-    }
+        ret = iommufd_cdev_attach_ioas_hwpt(vbasedev, hwpt->hwpt_id, errp);
+        if (ret) {
+            iommufd_backend_free_id(container->be, hwpt->hwpt_id);
+            g_free(hwpt);
+            return false;
+        }
 
-    if (!iommufd_backend_alloc_hwpt(iommufd, vbasedev->devid,
-                                    container->ioas_id, flags,
-                                    IOMMU_HWPT_DATA_NONE, 0, NULL,
-                                    &hwpt_id, errp)) {
-        return false;
-    }
+        struct iommu_viommu_alloc alloc_viommu = {
+            .size = sizeof(alloc_viommu),
+            .flags = IOMMU_VIOMMU_KVM_FD,
+            .type = IOMMU_VIOMMU_TYPE_ARM_SMMUV3,
+            .dev_id = vbasedev->devid,
+            .hwpt_id = hwpt_id,
+            .kvm_vm_fd = kvm_vm_fd(kvm_state),
+        };
 
-    ret = iommufd_cdev_attach_ioas_hwpt(vbasedev, hwpt_id, errp);
-    if (ret) {
-        iommufd_backend_free_id(container->be, hwpt_id);
-        return false;
-    }
+        if (ioctl(iommufd->fd, IOMMU_VIOMMU_ALLOC, &alloc_viommu)) {
+            ret = -errno;
+            warn_report("failed to allocate VIOMMU %d", ret);
+            return false;
+        }
+
+#define STRTAB_STE_0_V          (1UL << 0)
+#define STRTAB_STE_0_CFG_BYPASS 4
+
+        struct iommu_hwpt_arm_smmuv3 bypass_ste;
+
+        bypass_ste.ste[0] = STRTAB_STE_0_V | (STRTAB_STE_0_CFG_BYPASS << 1);
+        bypass_ste.ste[1] = 0x0UL;
+
+#undef STRTAB_STE_0_V
+#undef STRTAB_STE_0_CFG_BYPASS
+
+        if (!iommufd_backend_alloc_hwpt(iommufd, vbasedev->devid,
+                                        alloc_viommu.out_viommu_id, 0,
+                                        IOMMU_HWPT_DATA_ARM_SMMUV3,
+                                        sizeof(bypass_ste), &bypass_ste,
+                                        &hwpt_id, errp)) {
+            warn_report("failed to allocate hwpt!");
+            return false;
+        }
+
+        iommufd->viommu_id = alloc_viommu.out_viommu_id;
+
+        hwpt->hwpt_id_2 = hwpt_id;
+    } else {
+        /*
+         * This is quite early and VFIO Migration state isn't yet fully
+         * initialized, thus rely only on IOMMU hardware capabilities as to
+         * whether IOMMU dirty tracking is going to be requested. Later
+         * vfio_migration_realize() may decide to use VF dirty tracking
+         * instead.
+         */
+        if (!iommufd_backend_get_device_info(vbasedev->iommufd, vbasedev->devid,
+                                             &type, NULL, 0, &hw_caps, errp)) {
+            return false;
+        }
+
+        if (hw_caps & IOMMU_HW_CAP_DIRTY_TRACKING) {
+            flags = IOMMU_HWPT_ALLOC_DIRTY_TRACKING;
+        }
+
+        if (cpr_is_incoming()) {
+            hwpt_id = vbasedev->cpr.hwpt_id;
+            goto skip_alloc;
+        }
+
+        if (!iommufd_backend_alloc_hwpt(iommufd, vbasedev->devid,
+                                        container->ioas_id, flags,
+                                        IOMMU_HWPT_DATA_NONE, 0, NULL,
+                                        &hwpt_id, errp)) {
+            return false;
+        }
+
+        ret = iommufd_cdev_attach_ioas_hwpt(vbasedev, hwpt_id, errp);
+        if (ret) {
+            iommufd_backend_free_id(container->be, hwpt_id);
+            return false;
+        }
 
 skip_alloc:
-    hwpt = g_malloc0(sizeof(*hwpt));
-    hwpt->hwpt_id = hwpt_id;
-    hwpt->hwpt_flags = flags;
-    QLIST_INIT(&hwpt->device_list);
-
+        hwpt = g_malloc0(sizeof(*hwpt));
+        hwpt->hwpt_id = hwpt_id;
+        hwpt->hwpt_flags = flags;
+        QLIST_INIT(&hwpt->device_list);
+    }
     vbasedev->hwpt = hwpt;
     vbasedev->cpr.hwpt_id = hwpt->hwpt_id;
     vbasedev->iommu_dirty_tracking = iommufd_hwpt_dirty_tracking(hwpt);
