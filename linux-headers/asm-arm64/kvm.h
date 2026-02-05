@@ -543,4 +543,8 @@ struct reg_mask_range {
 
 #endif
 
+/* arm specific KVM_EXIT_ARM64_TIO nr value*/
+#define RMI_EXIT_VDEV_REQUEST		0x08
+#define RMI_EXIT_VDEV_MAP		0x09
+
 #endif /* __ARM_KVM_H__ */

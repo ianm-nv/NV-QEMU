@@ -179,6 +179,7 @@ struct kvm_xen_exit {
 #define KVM_EXIT_LOONGARCH_IOCSR  38
 #define KVM_EXIT_MEMORY_FAULT     39
 #define KVM_EXIT_TDX              40
+#define KVM_EXIT_ARM64_TIO	  42
 
 /* For KVM_EXIT_INTERNAL_ERROR */
 /* Emulate instruction failed. */
@@ -465,6 +466,15 @@ struct kvm_run {
 				} setup_event_notify;
 			};
 		} tdx;
+		/* KVM_EXIT_ARM64_TIO*/
+		struct {
+			__u64 flags;
+			__u64 nr;
+			__u64 vdev_id;
+			__u64 gpa_base;
+			__u64 gpa_top;
+			__u64 pa_base;
+		} cca_exit;
 		/* Fix the size of the union. */
 		char padding[256];
 	};
@@ -1641,4 +1651,5 @@ struct kvm_arm_rmi_populate {
 
 #define KVM_ARM_RMI_POPULATE	_IOW(KVMIO, 0xd7, struct kvm_arm_rmi_populate)
 
+#define KVM_ARM_VCPU_RMM_REC_ENTER_FLAGS _IOW(KVMIO, 0xd8, __u64)
 #endif /* __LINUX_KVM_H */
