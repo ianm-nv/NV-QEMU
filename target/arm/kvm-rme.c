@@ -1096,12 +1096,11 @@ static const PCIIOMMUOps rme_dma_ops = {
     .get_address_space = rme_dma_get_address_space,
 };
 
-void kvm_arm_rme_init_gpa_space(hwaddr highest_gpa, PCIBus *pci_bus)
+void kvm_arm_rme_init_gpa_space(unsigned int ipa_bits, PCIBus *pci_bus)
 {
     RealmDmaRegion *dma_region;
-    const unsigned int ipa_bits = 64 - clz64(highest_gpa) + 1;
 
-    if (!rme_guest) {
+    if (!rme_guest || !ipa_bits) {
         return;
     }
 

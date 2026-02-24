@@ -2672,7 +2672,7 @@ static void machvirt_init(MachineState *machine)
                                vms->fw_cfg, OBJECT(vms));
     }
 
-    kvm_arm_rme_init_gpa_space(vms->highest_gpa, vms->bus);
+    kvm_arm_rme_init_gpa_space(vms->rme_ipa_bits, vms->bus);
 
     create_measurement_log(vms);
 
@@ -3354,7 +3354,31 @@ static int virt_kvm_type(MachineState *ms, const char *type_str)
     /* we freeze the memory map to compute the highest gpa */
     virt_set_memmap(vms, max_vm_pa_size);
 
-    requested_pa_size = 64 - clz64(vms->highest_gpa) + rme_reserve_bit;
+    if (rme_vm_type) {
+        /*
+         * For RME guests, always use the maximum supported IPA size rather
+         * than tightly fitting it to the memory layout. This ensures the
+         * protected/shared split bit is at a stable, high position that
+         * won't shift when the memory layout changes (e.g. due to a larger
+         * highmem-mmio-size).
+         *
+         * With a tightly-computed IPA, increasing highmem-mmio-size from
+         * 512G to 1024G moves the MMIO base from 512GiB to 1TiB (due to
+         * natural alignment), pushing ipa_bits from 41 to 42 and shifting
+         * the shared bit from bit 40 to bit 41. The 1TiB-based MMIO
+         * addresses already have bit 40 set, so guest firmware that ORs
+         * addresses with the shared bit at the old position (bit 40) gets
+         * a no-op, leaving the IPA in the protected half and causing the
+         * RMM to inject a Synchronous External Abort.
+         *
+         * Using the maximum IPA avoids this class of problem entirely by
+         * keeping the shared bit well above any address used in the memory
+         * layout.
+         */
+        requested_pa_size = max_vm_pa_size + rme_reserve_bit;
+    } else {
+        requested_pa_size = 64 - clz64(vms->highest_gpa);
+    }
 
     /*
      * KVM requires the IPA size to be at least 32 bits.
@@ -3370,6 +3394,9 @@ static int virt_kvm_type(MachineState *ms, const char *type_str)
                      requested_pa_size, max_vm_pa_size + rme_reserve_bit);
         return -1;
     }
+
+    vms->rme_ipa_bits = rme_vm_type ? requested_pa_size : 0;
+
     /*
      * We return the requested PA log size, unless KVM only supports
      * the implicit legacy 40b IPA setting, in which case the kvm_type

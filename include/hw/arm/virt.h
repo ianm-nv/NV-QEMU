@@ -183,6 +183,7 @@ struct VirtMachineState {
     bool legacy_smmuv3_present;
     bool pci_preserve_config;
     Object *event_log;
+    int rme_ipa_bits;
 };
 
 #define VIRT_ECAM_ID(high) (high ? VIRT_HIGH_PCIE_ECAM : VIRT_PCIE_ECAM)

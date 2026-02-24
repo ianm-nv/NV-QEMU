@@ -327,14 +327,17 @@ int kvm_arm_rme_vcpu_init(CPUState *cs);
 void kvm_arm_rme_init_guest_ram(hwaddr base, size_t size);
 
 /**
- * kvm_arm_rme_setup_gpa
- * @highest_gpa: highest address of the lower half of the guest address space
+ * kvm_arm_rme_init_gpa_space
+ * @ipa_bits: total IPA size in bits (including the shared/protected split bit)
  * @pci_bus: The main PCI bus, for which PCI queries DMA address spaces
  *
  * Setup the guest-physical address space for a Realm. Install a memory region
- * and notifier to manage the shared upper half of the address space.
+ * and notifier to manage the shared upper half of the address space. The
+ * ipa_bits value must match the IPA size passed to KVM during VM creation so
+ * that the DMA IOMMU translation and the RMM agree on the shared bit position.
+ * Pass 0 to skip initialization (non-RME guests).
  */
-void kvm_arm_rme_init_gpa_space(hwaddr highest_gpa, PCIBus *pci_bus);
+void kvm_arm_rme_init_gpa_space(unsigned int ipa_bits, PCIBus *pci_bus);
 
 /**
  * kvm_arm_rme_get_measurement_log
