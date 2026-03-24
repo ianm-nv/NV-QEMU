@@ -135,6 +135,10 @@ struct arm_boot_info {
 
     /* CPU having load the kernel and that should be the first to boot.  */
     ARMCPU *primary_cpu;
+
+    /* measurement log location in guest memory */
+    hwaddr log_paddr;
+    size_t log_size;
 };
 
 /**
