@@ -52,6 +52,20 @@ bool kvm_arm_el2_supported(void)
     return false;
 }
 
+void kvm_arm_rme_init_guest_ram(hwaddr base, size_t size)
+{
+}
+
+void kvm_arm_rme_init_gpa_space(hwaddr highest_gpa,
+                                              PCIBus *pci_bus)
+{
+}
+
+Object *kvm_arm_rme_get_measurement_log(void)
+{
+    return NULL;
+}
+
 /*
  * These functions should never actually be called without KVM support.
  */
@@ -61,6 +75,11 @@ void kvm_arm_set_cpu_features_from_host(ARMCPU *cpu)
 }
 
 void kvm_arm_add_vcpu_properties(ARMCPU *cpu)
+{
+    g_assert_not_reached();
+}
+
+int kvm_arm_vcpu_finalize(ARMCPU *cpu, int feature)
 {
     g_assert_not_reached();
 }
@@ -121,6 +140,21 @@ void kvm_arm_cpu_pre_save(ARMCPU *cpu)
 }
 
 bool kvm_arm_cpu_post_load(ARMCPU *cpu)
+{
+    g_assert_not_reached();
+}
+
+int kvm_arm_rme_init(MachineState *ms)
+{
+    g_assert_not_reached();
+}
+
+int kvm_arm_rme_vm_type(MachineState *ms)
+{
+    g_assert_not_reached();
+}
+
+int kvm_arm_rme_vcpu_init(CPUState *cs)
 {
     g_assert_not_reached();
 }
