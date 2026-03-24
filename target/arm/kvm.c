@@ -1993,6 +1993,12 @@ int kvm_arch_init_vcpu(CPUState *cs)
         return ret;
     }
 
+    /* Mark realm vCPUs so we can skip register access later */
+    ret = kvm_arm_rme_vcpu_init(cs);
+    if (ret) {
+        return ret;
+    }
+
     if (cpu_isar_feature(aa64_sve, cpu)) {
         ret = kvm_arm_sve_set_vls(cpu);
         if (ret) {
@@ -2138,6 +2144,37 @@ int kvm_arch_put_registers(CPUState *cs, KvmPutState level, Error **errp)
 
     ARMCPU *cpu = ARM_CPU(cs);
     CPUARMState *env = &cpu->env;
+
+    /*
+     * Realm vCPU register state is mostly protected. The kernel only
+     * allows setting x0-x30 and PC for realm vCPUs. Skip everything
+     * else (PSTATE, SP, ELR, SPSR, FP/SVE, system regs).
+     */
+    if (cpu->kvm_rme) {
+        for (i = 0; i < 31; i++) {
+            ret = kvm_set_one_reg(cs, AARCH64_CORE_REG(regs.regs[i]),
+                                  &env->xregs[i]);
+            if (ret) {
+                return ret;
+            }
+        }
+        ret = kvm_set_one_reg(cs, AARCH64_CORE_REG(regs.pc), &env->pc);
+        if (ret) {
+            return ret;
+        }
+        /*
+         * Must sync MP state to KVM even for realm vCPUs. The kernel uses
+         * KVM_SET_MP_STATE to set KVM_REQ_SLEEP for powered-off vCPUs.
+         * Without this, secondary vCPUs reach kvm_rec_enter and get
+         * RMI_ERROR_REC because their RECs are not runnable.
+         *
+         * Note: start_powered_off is set after kvm_init_features is built,
+         * so KVM_ARM_VCPU_POWER_OFF is never in the VCPU_INIT features.
+         * The MP state sync is the only mechanism to tell the kernel that
+         * secondary vCPUs should sleep.
+         */
+        return kvm_arm_sync_mpstate_to_kvm(cpu);
+    }
 
     /* If we are in AArch32 mode then we need to copy the AArch32 regs to the
      * AArch64 registers before pushing them out to 64-bit KVM.
@@ -2322,6 +2359,14 @@ int kvm_arch_get_registers(CPUState *cs, Error **errp)
 
     ARMCPU *cpu = ARM_CPU(cs);
     CPUARMState *env = &cpu->env;
+
+    /*
+     * Realm vCPU register state is protected and cannot be read from
+     * userspace. Return success without attempting any register reads.
+     */
+    if (cpu->kvm_rme) {
+        return 0;
+    }
 
     for (i = 0; i < 31; i++) {
         ret = kvm_get_one_reg(cs, AARCH64_CORE_REG(regs.regs[i]),
