@@ -1928,6 +1928,11 @@ void virt_machine_done(Notifier *notifier, void *data)
         exit(1);
     }
 
+    if (vms->event_log) {
+        object_property_set_uint(vms->event_log, "load-addr",
+                                 vms->bootinfo.log_paddr, &error_fatal);
+    }
+
     pci_bus_add_fw_cfg_extra_pci_roots(vms->fw_cfg, vms->bus,
                                        &error_abort);
 
@@ -2205,6 +2210,21 @@ static void finalize_gic_version(VirtMachineState *vms)
  * virt_post_cpus_gic_realized() must be called after the CPUs and
  * the GIC have both been realized.
  */
+static void create_measurement_log(VirtMachineState *vms)
+{
+    Error *err = NULL;
+
+    vms->event_log = kvm_arm_rme_get_measurement_log();
+    if (vms->event_log == NULL) {
+        return;
+    }
+    vms->bootinfo.log_size = object_property_get_uint(vms->event_log,
+                                                      "max-size", &err);
+    if (err != NULL) {
+        error_report_err(err);
+    }
+}
+
 static void virt_post_cpus_gic_realized(VirtMachineState *vms,
                                         MemoryRegion *sysmem)
 {
@@ -2627,6 +2647,8 @@ static void machvirt_init(MachineState *machine)
     }
 
     kvm_arm_rme_init_gpa_space(vms->highest_gpa, vms->bus);
+
+    create_measurement_log(vms);
 
     vms->bootinfo.ram_size = machine->ram_size;
     vms->bootinfo.board_id = -1;
