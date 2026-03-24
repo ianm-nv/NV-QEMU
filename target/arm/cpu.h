@@ -1154,6 +1154,9 @@ struct ArchCPU {
 
     /* Generic timer counter frequency, in Hz */
     uint64_t gt_cntfrq_hz;
+
+    /* Set when this vCPU belongs to a CCA realm */
+    bool kvm_rme;
 };
 
 typedef struct ARMCPUInfo {
