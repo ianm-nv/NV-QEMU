@@ -227,3 +227,39 @@ CpuDefinitionInfoList *qmp_query_cpu_definitions(Error **errp)
 
     return cpu_list;
 }
+
+#include "system/kvm.h"
+
+CcaCapability *qmp_query_cca_capabilities(Error **errp)
+{
+    CcaMeasurementAlgoList *head = NULL, **tail = &head;
+    CcaMeasurementAlgo *malgo;
+    CcaCapability *info;
+
+    if (!kvm_enabled()) {
+        error_setg(errp, "KVM not enabled");
+        return NULL;
+    }
+
+    if (!kvm_arm_rme_available()) {
+        error_setg(errp, "RME is not enabled in KVM");
+        return NULL;
+    }
+
+    /*
+     * DEN0137 v2.0 RMMs mandate SHA-256 and SHA-512 measurement algorithms;
+     * report both as available. A future kernel/RMM API for enumerating the
+     * actual RMM-supported algorithm set would let this become a real query.
+     */
+    malgo = g_new0(CcaMeasurementAlgo, 1);
+    malgo->measurement_algo = g_strdup("sha256");
+    QAPI_LIST_APPEND(tail, malgo);
+
+    malgo = g_new0(CcaMeasurementAlgo, 1);
+    malgo->measurement_algo = g_strdup("sha512");
+    QAPI_LIST_APPEND(tail, malgo);
+
+    info = g_new0(CcaCapability, 1);
+    info->sections = head;
+    return info;
+}

@@ -661,6 +661,12 @@ static void rme_guest_finalize(Object *obj)
     memory_listener_unregister(&rme_guest->memory_listener);
 }
 
+bool kvm_arm_rme_available(void)
+{
+    return kvm_enabled() &&
+           kvm_check_extension(kvm_state, KVM_CAP_ARM_RMI);
+}
+
 int kvm_arm_rme_init(MachineState *ms)
 {
     static Error *rme_mig_blocker;

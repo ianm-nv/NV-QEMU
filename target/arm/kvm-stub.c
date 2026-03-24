@@ -139,6 +139,11 @@ char *kvm_print_register_name(uint64_t regidx)
     g_assert_not_reached();
 }
 
+bool kvm_arm_rme_available(void)
+{
+    return false;
+}
+
 int kvm_arm_rme_init(MachineState *ms)
 {
     g_assert_not_reached();

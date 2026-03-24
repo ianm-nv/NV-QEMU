@@ -252,6 +252,14 @@ void arm_gic_cap_kvm_probe(GICCapability *v2, GICCapability *v3);
 char *kvm_print_register_name(uint64_t regidx);
 
 /**
+ * kvm_arm_rme_available
+ *
+ * Returns true if the running kernel advertises KVM_CAP_ARM_RMI. Callable from
+ * target-common files that cannot include <linux/kvm.h> directly.
+ */
+bool kvm_arm_rme_available(void);
+
+/**
  * kvm_arm_rme_init
  * @ms: the machine state
  *
