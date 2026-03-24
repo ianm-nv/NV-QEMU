@@ -1289,16 +1289,25 @@ static void virt_flash_create(VirtMachineState *vms)
     vms->flash[1] = virt_flash_create1(vms, "virt.flash1", "pflash1");
 }
 
-static void virt_flash_map1(PFlashCFI01 *flash,
-                            hwaddr base, hwaddr size,
-                            MemoryRegion *sysmem)
+static void virt_flash_realize(PFlashCFI01 *flash, hwaddr size)
 {
     DeviceState *dev = DEVICE(flash);
+
+    if (dev->realized) {
+        return;
+    }
 
     assert(QEMU_IS_ALIGNED(size, VIRT_FLASH_SECTOR_SIZE));
     assert(size / VIRT_FLASH_SECTOR_SIZE <= UINT32_MAX);
     qdev_prop_set_uint32(dev, "num-blocks", size / VIRT_FLASH_SECTOR_SIZE);
     sysbus_realize_and_unref(SYS_BUS_DEVICE(dev), &error_fatal);
+}
+
+static void virt_flash_map1(PFlashCFI01 *flash,
+                            hwaddr base, hwaddr size,
+                            MemoryRegion *sysmem)
+{
+    DeviceState *dev = DEVICE(flash);
 
     memory_region_add_subregion(sysmem, base,
                                 sysbus_mmio_get_region(SYS_BUS_DEVICE(dev),
@@ -1320,6 +1329,13 @@ static void virt_flash_map(VirtMachineState *vms,
     hwaddr flashsize = vms->memmap[VIRT_FLASH].size / 2;
     hwaddr flashbase = vms->memmap[VIRT_FLASH].base;
 
+    virt_flash_realize(vms->flash[0], flashsize);
+    virt_flash_realize(vms->flash[1], flashsize);
+
+    if (virt_machine_is_confidential(vms)) {
+        return;
+    }
+
     virt_flash_map1(vms->flash[0], flashbase, flashsize,
                     secure_sysmem);
     virt_flash_map1(vms->flash[1], flashbase + flashsize, flashsize,
@@ -1332,6 +1348,10 @@ static void virt_flash_fdt(VirtMachineState *vms,
 {
     hwaddr flashsize = vms->memmap[VIRT_FLASH].size / 2;
     hwaddr flashbase = vms->memmap[VIRT_FLASH].base;
+
+    if (virt_machine_is_confidential(vms)) {
+        return;
+    }
     MachineState *ms = MACHINE(vms);
     char *nodename;
 
@@ -1370,6 +1390,34 @@ static void virt_flash_fdt(VirtMachineState *vms,
     }
 }
 
+/*
+ * For confidential VMs, firmware is loaded into RAM so it can be measured.
+ * Flash devices are created but not mapped. */
+static bool virt_confidential_firmware_init(VirtMachineState *vms,
+                                            MemoryRegion *sysmem)
+{
+    MemoryRegion *fw_ram;
+    hwaddr fw_base = vms->memmap[VIRT_FLASH].base;
+    hwaddr fw_size = vms->memmap[VIRT_FLASH].size;
+    hwaddr flashsize = fw_size / 2;
+
+    virt_flash_realize(vms->flash[0], flashsize);
+    virt_flash_realize(vms->flash[1], flashsize);
+
+    if (!MACHINE(vms)->firmware) {
+        return false;
+    }
+
+    assert(machine_require_guest_memfd(MACHINE(vms)));
+
+    fw_ram = g_new(MemoryRegion, 1);
+    memory_region_init_ram_guest_memfd(fw_ram, NULL, "fw_ram", fw_size,
+                                       &error_fatal);
+    memory_region_add_subregion(sysmem, fw_base, fw_ram);
+
+    return true;
+}
+
 static bool virt_firmware_init(VirtMachineState *vms,
                                MemoryRegion *sysmem,
                                MemoryRegion *secure_sysmem)
@@ -1377,6 +1425,15 @@ static bool virt_firmware_init(VirtMachineState *vms,
     int i;
     const char *bios_name;
     BlockBackend *pflash_blk0;
+
+    /*
+     * For a confidential VM, the firmware image and any boot information,
+     * including EFI variables, are stored in RAM in order to be measurable and
+     * private. Create a RAM region and load the firmware image there.
+     */
+    if (virt_machine_is_confidential(vms)) {
+        return virt_confidential_firmware_init(vms, sysmem);
+    }
 
     /* Map legacy -drive if=pflash to machine properties */
     for (i = 0; i < ARRAY_SIZE(vms->flash); i++) {
