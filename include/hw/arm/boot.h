@@ -112,6 +112,10 @@ struct arm_boot_info {
      */
     bool firmware_loaded;
 
+    /* Used when loading firmware into RAM for confidential guests */
+    hwaddr firmware_base;
+    hwaddr firmware_max_size;
+
     /* Address at which board specific loader/setup code exists. If enabled,
      * this code-blob will run before anything else. It must return to the
      * caller via the link register. There is no stack set up. Enabled by
@@ -136,6 +140,16 @@ struct arm_boot_info {
     /* CPU having load the kernel and that should be the first to boot.  */
     ARMCPU *primary_cpu;
 
+    /*
+     * Instead of starting in a small bootloader that jumps to the kernel,
+     * immediately start in the kernel.
+     */
+    bool skip_bootloader;
+
+    /*
+     * Confidential guest boot loads everything into RAM so it can be measured.
+     */
+    bool confidential;
     /* measurement log location in guest memory */
     hwaddr log_paddr;
     size_t log_size;
