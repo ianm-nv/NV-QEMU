@@ -32,6 +32,7 @@
 #include "qemu/option.h"
 #include "qemu/units.h"
 #include "qemu/bswap.h"
+#include "kvm_arm.h"
 
 #include <sys/ioctl.h>
 #include "qapi/error.h"
@@ -739,6 +740,24 @@ int arm_load_dtb(hwaddr addr, const struct arm_boot_info *binfo,
 
     fdt_add_psci_node(fdt, cpu);
 
+    if (binfo->log_size) {
+        char *nodename;
+
+        qemu_fdt_add_subnode(fdt, "/reserved-memory");
+        qemu_fdt_setprop_cell(fdt, "/reserved-memory", "#address-cells", 0x2);
+        qemu_fdt_setprop_cell(fdt, "/reserved-memory", "#size-cells", 0x2);
+        qemu_fdt_setprop(fdt, "/reserved-memory", "ranges", NULL, 0);
+
+        nodename = g_strdup_printf("/reserved-memory/event-log@%" PRIx64,
+                                   binfo->log_paddr);
+        qemu_fdt_add_subnode(fdt, nodename);
+        qemu_fdt_setprop_string(fdt, nodename, "compatible", "cc-event-log");
+        qemu_fdt_setprop_sized_cells(fdt, nodename, "reg",
+                                     2, binfo->log_paddr,
+                                     2, binfo->log_size);
+        g_free(nodename);
+    }
+
     if (binfo->modify_dtb) {
         binfo->modify_dtb(binfo, fdt);
     }
@@ -834,7 +853,13 @@ static void do_cpu_reset(void *opaque)
             if (cpu == info->primary_cpu) {
                 AddressSpace *as = arm_boot_address_space(cpu, info);
 
-                cpu_set_pc(cs, info->loader_start);
+                if (info->skip_bootloader) {
+                    assert(is_a64(env));
+                    env->xregs[0] = info->dtb_start;
+                    cpu_set_pc(cs, info->entry);
+                } else {
+                    cpu_set_pc(cs, info->loader_start);
+                }
 
                 if (!have_dtb(info)) {
                     set_kernel_args(info, as);
@@ -924,7 +949,8 @@ static ssize_t arm_load_elf(struct arm_boot_info *info, uint64_t *pentry,
 }
 
 static uint64_t load_aarch64_image(const char *filename, hwaddr mem_base,
-                                   hwaddr *entry, AddressSpace *as)
+                                   hwaddr *entry, AddressSpace *as,
+                                   bool skip_bootloader)
 {
     const size_t max_bytes = LOAD_IMAGE_MAX_DECOMPRESSED_BYTES;
     hwaddr kernel_load_offset = KERNEL64_LOAD_ADDR;
@@ -976,7 +1002,7 @@ static uint64_t load_aarch64_image(const char *filename, hwaddr mem_base,
              * bootloader, we can just load it starting at 2MB+offset rather
              * than 0MB + offset.
              */
-            if (kernel_load_offset < BOOTLOADER_MAX_SIZE) {
+            if (kernel_load_offset < BOOTLOADER_MAX_SIZE && !skip_bootloader) {
                 kernel_load_offset += 2 * MiB;
             }
         }
@@ -997,6 +1023,31 @@ static uint64_t load_aarch64_image(const char *filename, hwaddr mem_base,
     g_free(buffer);
 
     return kernel_size;
+}
+
+static void add_event_log(struct arm_boot_info *info)
+{
+    if (!info->log_size) {
+        return;
+    }
+
+    if (!info->dtb_limit) {
+        int dtb_size = 0;
+
+        if (!info->get_dtb || !info->get_dtb(info, &dtb_size) ||
+            dtb_size == 0) {
+            error_report("Board does not have a DTB");
+            exit(1);
+        }
+        info->dtb_limit = info->dtb_start + dtb_size;
+    }
+
+    info->log_paddr = info->dtb_limit;
+    if (info->log_paddr + info->log_size >
+        info->loader_start + info->ram_size) {
+        error_report("Not enough space for measurement log and DTB");
+        exit(1);
+    }
 }
 
 static void arm_setup_direct_kernel_boot(ARMCPU *cpu,
@@ -1046,6 +1097,7 @@ static void arm_setup_direct_kernel_boot(ARMCPU *cpu,
             }
             info->dtb_start = info->loader_start;
             info->dtb_limit = image_low_addr;
+            add_event_log(info);
         }
     }
     entry = elf_entry;
@@ -1060,7 +1112,8 @@ static void arm_setup_direct_kernel_boot(ARMCPU *cpu,
     }
     if (arm_feature(&cpu->env, ARM_FEATURE_AARCH64) && kernel_size < 0) {
         kernel_size = load_aarch64_image(info->kernel_filename,
-                                         info->loader_start, &entry, as);
+                                         info->loader_start, &entry, as,
+                                         info->skip_bootloader);
         is_linux = 1;
         if (kernel_size >= 0) {
             image_low_addr = entry;
@@ -1184,6 +1237,7 @@ static void arm_setup_direct_kernel_boot(ARMCPU *cpu,
                 error_report("Not enough space for DTB after kernel/initrd");
                 exit(1);
             }
+            add_event_log(info);
             fixupcontext[FIXUP_ARGPTR_LO] = info->dtb_start;
             fixupcontext[FIXUP_ARGPTR_HI] = info->dtb_start >> 32;
         } else {
@@ -1201,8 +1255,10 @@ static void arm_setup_direct_kernel_boot(ARMCPU *cpu,
         fixupcontext[FIXUP_ENTRYPOINT_LO] = entry;
         fixupcontext[FIXUP_ENTRYPOINT_HI] = entry >> 32;
 
-        arm_write_bootloader("bootloader", as, info->loader_start,
-                             primary_loader, fixupcontext);
+        if (!info->skip_bootloader) {
+            arm_write_bootloader("bootloader", as, info->loader_start,
+                                 primary_loader, fixupcontext);
+        }
 
         if (info->write_board_setup) {
             info->write_board_setup(cpu, info);
@@ -1219,6 +1275,29 @@ static void arm_setup_direct_kernel_boot(ARMCPU *cpu,
 
     for (cs = first_cpu; cs; cs = CPU_NEXT(cs)) {
         ARM_CPU(cs)->env.boot_info = info;
+    }
+}
+
+static void arm_setup_confidential_firmware_boot(ARMCPU *cpu,
+                                                 struct arm_boot_info *info,
+                                                 const char *firmware_filename)
+{
+    ssize_t fw_size;
+    const char *fname;
+    AddressSpace *as = arm_boot_address_space(cpu, info);
+
+    fname = qemu_find_file(QEMU_FILE_TYPE_BIOS, firmware_filename);
+    if (!fname) {
+        error_report("Could not find firmware image '%s'", firmware_filename);
+        exit(1);
+    }
+
+    fw_size = load_image_targphys_as(firmware_filename,
+                                     info->firmware_base,
+                                     info->firmware_max_size, as, NULL);
+    if (fw_size <= 0) {
+        error_report("could not load firmware '%s'", firmware_filename);
+        exit(1);
     }
 }
 
@@ -1317,6 +1396,9 @@ void arm_load_kernel(ARMCPU *cpu, MachineState *ms, struct arm_boot_info *info)
     /* Load the kernel.  */
     if (!info->kernel_filename || info->firmware_loaded) {
         arm_setup_firmware_boot(cpu, info);
+        if (info->confidential && ms->firmware) {
+            arm_setup_confidential_firmware_boot(cpu, info, ms->firmware);
+        }
     } else {
         arm_setup_direct_kernel_boot(cpu, info);
     }
