@@ -248,3 +248,39 @@ CpuDefinitionInfoList *qmp_query_cpu_definitions(Error **errp)
 
     return cpu_list;
 }
+
+#include "system/kvm.h"
+
+CcaCapability *qmp_query_cca_capabilities(Error **errp)
+{
+#ifdef CONFIG_KVM
+    CcaMeasurementAlgoList *head = NULL, **tail = &head;
+    CcaMeasurementAlgo *malgo;
+    CcaCapability *info;
+
+    if (!kvm_enabled()) {
+        error_setg(errp, "KVM not enabled");
+        return NULL;
+    }
+
+    if (!kvm_check_extension(kvm_state, KVM_CAP_ARM_RMI)) {
+        error_setg(errp, "RME is not enabled in KVM");
+        return NULL;
+    }
+
+    malgo = g_new0(CcaMeasurementAlgo, 1);
+    malgo->measurement_algo = g_strdup("sha256");
+    QAPI_LIST_APPEND(tail, malgo);
+
+    malgo = g_new0(CcaMeasurementAlgo, 1);
+    malgo->measurement_algo = g_strdup("sha512");
+    QAPI_LIST_APPEND(tail, malgo);
+
+    info = g_new0(CcaCapability, 1);
+    info->sections = head;
+    return info;
+#else
+    error_setg(errp, "KVM not available");
+    return NULL;
+#endif
+}
