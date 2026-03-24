@@ -1157,6 +1157,11 @@ struct ArchCPU {
 
     /* Set when this vCPU belongs to a CCA realm */
     bool kvm_rme;
+
+    /* Allows overriding the default KVM CPU configuration */
+    uint8_t num_bps;
+    uint8_t num_wps;
+    int8_t num_pmu_ctrs;
 };
 
 typedef struct ARMCPUInfo {
