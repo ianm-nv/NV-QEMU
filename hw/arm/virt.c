@@ -298,6 +298,7 @@ static bool ns_el2_virt_timer_present(void)
 
 static void create_fdt(VirtMachineState *vms)
 {
+    bool dtb_randomness = true;
     MachineState *ms = MACHINE(vms);
     int nb_numa_nodes = ms->numa_state->num_nodes;
     void *fdt = create_device_tree(&vms->fdt_size);
@@ -305,6 +306,16 @@ static void create_fdt(VirtMachineState *vms)
     if (!fdt) {
         error_report("create_device_tree() failed");
         exit(1);
+    }
+
+    /*
+     * Including random data in the DTB causes random initial measurement on CCA,
+     * so disable it for confidential VMs.
+     */
+    if (vms->dtb_randomness == ON_OFF_AUTO_OFF ||
+        (vms->dtb_randomness == ON_OFF_AUTO_AUTO &&
+         virt_machine_is_confidential(vms))) {
+        dtb_randomness = false;
     }
 
     ms->fdt = fdt;
@@ -328,13 +339,13 @@ static void create_fdt(VirtMachineState *vms)
 
     /* /chosen must exist for load_dtb to fill in necessary properties later */
     qemu_fdt_add_subnode(fdt, "/chosen");
-    if (vms->dtb_randomness) {
+    if (dtb_randomness) {
         create_randomness(ms, "/chosen");
     }
 
     if (vms->secure) {
         qemu_fdt_add_subnode(fdt, "/secure-chosen");
-        if (vms->dtb_randomness) {
+        if (dtb_randomness) {
             create_randomness(ms, "/secure-chosen");
         }
     }
@@ -2965,14 +2976,14 @@ static bool virt_get_dtb_randomness(Object *obj, Error **errp)
 {
     VirtMachineState *vms = VIRT_MACHINE(obj);
 
-    return vms->dtb_randomness;
+    return vms->dtb_randomness != ON_OFF_AUTO_OFF;
 }
 
 static void virt_set_dtb_randomness(Object *obj, bool value, Error **errp)
 {
     VirtMachineState *vms = VIRT_MACHINE(obj);
 
-    vms->dtb_randomness = value;
+    vms->dtb_randomness = value ? ON_OFF_AUTO_ON : ON_OFF_AUTO_OFF;
 }
 
 static char *virt_get_oem_id(Object *obj, Error **errp)
@@ -3816,8 +3827,8 @@ static void virt_instance_init(Object *obj)
     /* MTE is disabled by default.  */
     vms->mte = false;
 
-    /* Supply kaslr-seed and rng-seed by default */
-    vms->dtb_randomness = true;
+    /* Supply kaslr-seed and rng-seed by default (auto = disable for CCA) */
+    vms->dtb_randomness = ON_OFF_AUTO_AUTO;
 
     vms->irqmap = a15irqmap;
 
