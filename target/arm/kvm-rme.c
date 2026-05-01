@@ -91,6 +91,7 @@ struct RmeGuest {
     GSList *ram_regions;
 
     bool use_measurement_log;
+    bool realm_activated;
 
     RmeRamRegion init_ram;
     uint8_t ipa_bits;
@@ -606,6 +607,7 @@ static int rme_create_realm(Error **errp)
     }
 
     /* Realm will be activated implicitly on first KVM_RUN */
+    rme_guest->realm_activated = true;
     kvm_mark_guest_state_protected();
     return 0;
 }
@@ -615,6 +617,10 @@ static void rme_vm_state_change(void *opaque, bool running, RunState state)
     Error *err = NULL;
 
     if (!running) {
+        return;
+    }
+
+    if (rme_guest->realm_activated) {
         return;
     }
 
