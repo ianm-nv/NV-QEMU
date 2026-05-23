@@ -559,7 +559,16 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
         return -EINVAL;
     }
 
-    if (kvm_check_extension(s, KVM_CAP_ARM_NISV_TO_USER)) {
+    /*
+     * KVM_CAP_ARM_NISV_TO_USER is not on the realm-ext-allowed list in
+     * Linux 7.0+ (kvm_realm_ext_allowed() rejects anything not relevant
+     * to confidential VMs), so KVM_ENABLE_CAP returns -EINVAL for a
+     * realm VM. The cap has no effect on realms anyway -- realm faults
+     * go through the RMM path, not the NISV-to-user path -- so skip
+     * the attempt instead of producing a spurious error_report.
+     */
+    if (!kvm_arm_rme_vm_type(MACHINE(qdev_get_machine())) &&
+        kvm_check_extension(s, KVM_CAP_ARM_NISV_TO_USER)) {
         if (kvm_vm_enable_cap(s, KVM_CAP_ARM_NISV_TO_USER, 0)) {
             error_report("Failed to enable KVM_CAP_ARM_NISV_TO_USER cap");
         } else {
