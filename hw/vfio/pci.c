@@ -4166,27 +4166,22 @@ static void vfio_register_bdf(PCIDevice *pci_dev)
 {
     VFIOPCIDevice *vdev = VFIO_PCI_DEVICE(pci_dev);
     PCIBus *bus = pci_get_bus(pci_dev);
-    MachineState *ms = MACHINE(qdev_get_machine());
-    struct vfio_dev_info dev_info = {
-       .argsz = sizeof(dev_info),
-       .dev_num = (0ULL << 32) | (((uint64_t)pci_get_bdf(pci_dev)) << 8)
-    };
-    int ret;
+    Error *err = NULL;
 
-    /* Info already set or bus identifier is not set. Skip */
+    /* Already registered, or bus identifier is not yet assigned. Skip. */
     if (vdev->has_info_set ||
+        !vdev->vbasedev.iommufd_vdevice ||
         !vdev->is_running ||
         (!pci_bus_is_root(bus) &&
-         (pci_bus_num(bus) == 0)))
+         (pci_bus_num(bus) == 0))) {
         return;
+    }
 
     vdev->has_info_set = true;
 
-    ret = ioctl(vdev->vbasedev.fd, VFIO_DEVICE_SET_DEV_INFO, &dev_info);
-    if (ret && ms->cgs) {
-        error_report("VFIO: SET_DEV_INFO failed for %s (%s); "
-                     "device will not be covered by confidential-guest binding",
-                     vdev->vbasedev.name, strerror(errno));
+    if (iommufd_vdevice_register(&vdev->vbasedev, &err)) {
+        error_reportf_err(err, "Failed to register IOMMUFD vdevice for %s: ",
+                          vdev->vbasedev.name);
     }
 }
 
@@ -4335,6 +4330,8 @@ static const Property vfio_pci_properties[] = {
 #ifdef CONFIG_IOMMUFD
     DEFINE_PROP_LINK("iommufd", VFIOPCIDevice, vbasedev.iommufd,
                      TYPE_IOMMUFD_BACKEND, IOMMUFDBackend *),
+    DEFINE_PROP_BOOL("iommufd-vdevice", VFIOPCIDevice, vbasedev.iommufd_vdevice,
+                     false),
 #endif
     DEFINE_PROP_BOOL("skip-vsc-check", VFIOPCIDevice, skip_vsc_check, true),
     DEFINE_PROP_UINT16("x-vpasid-cap-offset", VFIOPCIDevice,
@@ -4464,6 +4461,9 @@ static void vfio_pci_class_init(ObjectClass *klass, const void *data)
     object_class_property_set_description(klass, /* 9.0 */
                                           "iommufd",
                                           "Set host IOMMUFD backend device");
+    object_class_property_set_description(klass, /* 10.0 */
+                                          "iommufd-vdevice",
+                                          "Register the device with IOMMUFD VDEVICE");
 #endif
     object_class_property_set_description(klass, /* 9.1 */
                                           "x-device-dirty-page-tracking",
