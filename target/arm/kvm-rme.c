@@ -804,7 +804,7 @@ static void rme_listener_region_add(MemoryListener *listener,
 
     ram_discard_listener_init(&rrdl->listener,
                               rme_ram_discard_notify_populate,
-                              rme_ram_discard_notify_discard, true);
+                              rme_ram_discard_notify_discard);
     ram_discard_manager_register_listener(rdm, &rrdl->listener, section);
 }
 
