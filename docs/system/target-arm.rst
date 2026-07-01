@@ -120,3 +120,9 @@ Arm CPU features
 
 .. toctree::
    arm/cpu-features
+
+Arm confidential guest support
+==============================
+
+.. toctree::
+   arm/cca
