@@ -16,7 +16,7 @@
 
 #include "qemu/osdep.h"
 
-#include "hw/boards.h"
+#include "hw/core/boards.h"
 #include "cpu.h"
 #include "hw/core/cpu.h"
 #include "hw/loader.h"
