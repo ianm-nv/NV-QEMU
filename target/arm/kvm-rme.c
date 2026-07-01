@@ -19,7 +19,7 @@
 #include "hw/core/boards.h"
 #include "cpu.h"
 #include "hw/core/cpu.h"
-#include "hw/loader.h"
+#include "hw/core/loader.h"
 #include "hw/pci/pci.h"
 #include "hw/tpm/tpm_log.h"
 #include "internals.h"
