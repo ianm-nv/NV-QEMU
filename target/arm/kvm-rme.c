@@ -619,6 +619,10 @@ static void rme_guest_cleanup(RmeGuest *guest)
         memory_listener_unregister(&guest->memory_listener);
         guest->memory_listener_registered = false;
     }
+    if (guest->dma_as) {
+        /* Devices may still be listening on the Realm DMA address space. */
+        address_space_remove_listeners(guest->dma_as);
+    }
     g_clear_pointer(&guest->dma_as, address_space_destroy_free);
     migrate_del_blocker(&guest->migration_blocker);
 }
